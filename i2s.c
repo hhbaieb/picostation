@@ -52,29 +52,35 @@ void i2s_data_thread() {
     int sector_loaded[2] = { -1 };
     int roundRobinCacheIndex = 0;
     FRESULT fr;
-    FIL fil;
-    sd_card_t *pSD;
-    int bytes;
-    char buf[128];
-    uint16_t *cd_samples[SECTOR_CACHE];
-    uint16_t CD_scrambling_key[1176] = { 0 };
-    int key = 1;
-    int logical_track = 0;
+    FIL fil; // Declare a file object for reading the audio data from the SD card
+    sd_card_t *pSD; // Declare a pointer to the SD card structure
+    int bytes; // Declare a variable to hold the number of bytes read from the file
+    char buf[128]; // Declare a buffer to hold the file data
+    uint16_t *cd_samples[SECTOR_CACHE]; // Declare an array of pointers to CD audio samples
+    uint16_t CD_scrambling_key[1176] = { 0 }; // Declare an array to hold the CD scrambling key
+    int key = 1; // Initialize the CD scrambling key
+    int logical_track = 0; // Initialize the logical track number
 
+    // Allocate memory for the PIO sample buffers
     pio_samples[0] = malloc(CD_SAMPLES_BYTES*2);
     pio_samples[1] = malloc(CD_SAMPLES_BYTES*2);
+
+    // Clear the PIO sample buffers
     memset(pio_samples[0], 0, CD_SAMPLES_BYTES*2);
     memset(pio_samples[1], 0, CD_SAMPLES_BYTES*2);
 
+    // Allocate memory for the CD audio sample cache
     for (int i=0; i<SECTOR_CACHE; i++) {
         cd_samples[i] = malloc(CD_SAMPLES_BYTES);
         if (cd_samples[i] == NULL) {
+            // If there is not enough memory for the cache, enter an infinite loop
             while(true) {
                 printf("not enough memory for cache!\n");
             }
         }
     }
 
+    // Generate the CD scrambling key
     for (int i=6; i<1176; i++) {
         char upper = key & 0xFF;
         for(int j=0; j<8; j++) {
@@ -92,8 +98,12 @@ void i2s_data_thread() {
         }
     }
 
+    // Get a pointer to the SD card structure
     pSD = sd_get_by_num(0);
+
+    // Mount the file system on the SD card
     fr = f_mount(&pSD->fatfs, pSD->pcName, 1);
+
     if (FR_OK != fr) panic("f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
     fr = f_open(&fil, "UNIROM.cue", FA_READ);
     if (FR_OK != fr && FR_EXIST != fr)
@@ -154,7 +164,7 @@ void i2s_data_thread() {
     }
 
     f_close(&fil);
-    fr = f_open(&fil, "UNIROM.bin", FA_READ);
+    fr = f_open(&fil, "UNIROM_BOOTDISC_8.0.K.bin", FA_READ);
     if (FR_OK != fr && FR_EXIST != fr)
         panic("f_open(%s) error: (%d)\n", FRESULT_str(fr), fr);
 
@@ -179,17 +189,20 @@ void i2s_data_thread() {
 
     while (true) {
         sector_t = sector;
+        // Check if the mutex can be entered and read data from the MECHACON_SM PIO state machine
         if (mutex_try_enter(&mechacon_mutex,0)) {
             while(!pio_sm_is_rx_fifo_empty(pio1, MECHACON_SM)) {
                 uint c = reverseBits(pio_sm_get_blocking(pio1, MECHACON_SM),8);
                 latched >>= 8;
                 latched |= c << 16;
             }
+            // Select the appropriate sensor based on the latched data and set its value
             select_sens(latched >> 20);
             gpio_put(SENS, SENS_data[latched >> 20]);
             mutex_exit(&mechacon_mutex);
         }
 
+        // Check if the current sector is within the PSNEE limit and if the PSNEE hysteresis is active
         if (sector_t > 0 && sector_t < PSNEE_SECTOR_LIMIT &&
                 SENS_data[SENS_GFS] && !soct && hasData &&
                 ((time_us_64() - psneeTimer) > 13333)) {
@@ -197,6 +210,7 @@ void i2s_data_thread() {
             psneeTimer = time_us_64();
         }
 
+        // If the PSNEE hysteresis is over the limit, send the appropriate signal to the SCEX
         if (psnee_hysteresis > 100) {
             psnee_hysteresis = 0;
             printf("+SCEX\n");
@@ -232,8 +246,10 @@ abort_psnee:
             printf("-SCEX\n");
         }
 
+        // Check if the buffer for DMA is different from the buffer for SD read
         if (buffer_for_dma != buffer_for_sd_read) {
             sector_change_timer = time_us_64();
+            // Wait for 100 microseconds to check if the sector has changed
             while((time_us_64() - sector_change_timer) < 100) {
                 if (sector_t != sector) {
                     sector_t = sector;
@@ -241,6 +257,7 @@ abort_psnee:
                 }
             }
             int cacheHit = -1;
+            // Determine the sector to search for in the cache
             int sector_to_search = sector_t < 4650 ? (sector_t % SECTOR_CACHE) + 4650 : sector_t;
             for (int i=0; i<SECTOR_CACHE; i++) {
                 if (cachedSectors[i] == sector_to_search) {
@@ -249,6 +266,7 @@ abort_psnee:
                 }
             }
 
+            // If the sector is not in the cache, read it from the SD card and add it to the cache
             if (cacheHit == -1) {
                 uint64_t seek_bytes = (sector_to_search-4650)*2352LL;
                 if (seek_bytes >= 0) {
@@ -267,6 +285,7 @@ abort_psnee:
                 roundRobinCacheIndex = (roundRobinCacheIndex + 1) % SECTOR_CACHE;
             }
 
+            // Convert the CD samples to I2S data and store it in the appropriate buffer
             if (sector_t >= 4650) {
                 for (int i=0; i<CD_SAMPLES*2; i++) {
                     uint32_t i2s_data;
@@ -290,6 +309,7 @@ abort_psnee:
             buffer_for_sd_read = (buffer_for_sd_read + 1) % 2;
         }
 
+        // Check if the DMA channel is not busy and start a new transfer
         if (!dma_channel_is_busy(channel)) {
             buffer_for_dma = (buffer_for_dma + 1) % 2;
             sector_sending = sector_loaded[buffer_for_dma];
