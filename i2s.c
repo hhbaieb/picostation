@@ -164,7 +164,7 @@ void i2s_data_thread() {
     }
 
     f_close(&fil);
-    fr = f_open(&fil, "UNIROM_BOOTDISC_8.0.K.bin", FA_READ);
+    fr = f_open(&fil, "UNIROM.bin", FA_READ);
     if (FR_OK != fr && FR_EXIST != fr)
         panic("f_open(%s) error: (%d)\n", FRESULT_str(fr), fr);
 

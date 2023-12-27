@@ -10,12 +10,8 @@
 
 // Declare global variables
 extern volatile uint subq_offset;
-//extern volatile int track;
 extern volatile int current_logical_track;
 extern volatile int sector;
-//extern volatile int sector_for_track_update;
-//extern volatile int subq_start;
-//extern volatile int mode;
 extern volatile bool hasData;
 extern volatile int num_logical_tracks;
 extern bool *is_data_track;
